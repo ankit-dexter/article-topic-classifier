@@ -135,7 +135,9 @@ article-topic-classifier/
 │   └── [Jupyter notebooks for analysis]
 ├── logs/
 │   └── training_*.log               # Training logs
-├── ARCHITECTURE.md                  # Detailed architecture guide
+├── config/
+│   ├── train.yaml                    # Training hyperparameters
+│   └── ARCHITECTURE.md              # Detailed architecture guide
 ├── requirements.txt                 # Python dependencies
 └── README.md                        # This file
 ```
@@ -273,7 +275,7 @@ Lower loss = better predictions ✓
 - Sets up file and console handlers
 - Supports UTF-8 encoding for special characters
 
-For detailed explanations of how everything works together, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For detailed explanations of how everything works together, see [ARCHITECTURE.md](config/ARCHITECTURE.md).
 
 ---
 
@@ -299,7 +301,7 @@ For detailed explanations of how everything works together, see [ARCHITECTURE.md
 ## 📚 Learn More
 
 ### Documentation
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Complete architecture guide with visualizations
+- [ARCHITECTURE.md](config/ARCHITECTURE.md) - Complete architecture guide with visualizations
 - [Hugging Face Transformers](https://huggingface.co/transformers/) - Official documentation
 - [PyTorch Tutorials](https://pytorch.org/tutorials/) - Learning resources
 
@@ -365,7 +367,7 @@ Contributions welcome! To contribute:
 ## 📞 Support
 
 For issues, questions, or suggestions:
-1. Check [ARCHITECTURE.md](ARCHITECTURE.md) for detailed explanations
+1. Check [ARCHITECTURE.md](config/ARCHITECTURE.md) for detailed explanations
 2. Review [Troubleshooting](#-troubleshooting) section
 3. Check log files in `logs/` directory
 
