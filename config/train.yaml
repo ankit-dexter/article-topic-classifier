@@ -1,0 +1,18 @@
+model:
+  name: distilbert-base-uncased
+  num_labels: 4
+
+data:
+  train_jsonl: data/part-0001.jsonl
+  text_fields: ["title", "body"]
+
+training:
+  epochs: 3
+  batch_size: 16
+  learning_rate: 0.00002
+  max_length: 256
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+
+output:
+  dir: artifacts/distilbert
