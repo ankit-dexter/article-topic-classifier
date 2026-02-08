@@ -117,7 +117,7 @@ def main():
     # This helps model converge better and generalize
     num_training_steps = cfg["training"]["epochs"] * len(loader)
     warmup_steps = int(cfg["training"]["warmup_ratio"] * num_training_steps)
-    logger.info(f"Total training steps: {num_training_steps}, Warmup steps: {warmup_steps}")
+    logger.info(f"Total training steps: {num_training_steps}, Warmup steps: {warmup_steps}-{len(loader)}")
     
     scheduler = get_scheduler(
         "linear",  # Linear decay after warmup

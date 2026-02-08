@@ -20,10 +20,17 @@ article-topic-classifier/
 │   └── train.yaml              # Hyperparameters and settings
 ├── data/
 │   ├── README.md
-│   └── part-0001.jsonl         # Training articles (JSON Lines format)
+│   ├── part-0001.jsonl         # Training articles (JSON Lines format)
+│   ├── train.jsonl             # Training split
+│   ├── val.jsonl               # Validation split
+│   ├── test.jsonl              # Test split
+│   └── test_examples.md        # Structured test cases for validation
 ├── scripts/
 │   ├── data_sanity_check.py    # Validate data before training
-│   └── train_distilbert.py     # Main training script
+│   ├── split_dataset.py        # Split data into train/val/test
+│   ├── train_distilbert.py     # Main training script
+│   ├── evaluate_distilbert.py  # Evaluation metrics script
+│   └── predict.py              # Inference script (classify new articles)
 ├── src/
 │   ├── dataset.py              # Custom dataset class
 │   ├── metrics.py              # Evaluation metrics
@@ -320,25 +327,128 @@ These files are all you need to make predictions on new articles!
 
 ---
 
-## 🔮 How to Use the Trained Model
+## 🔮 Inference & Prediction Pipeline
+
+After training, use the model for inference on new articles:
+
+### Inference Script: predict.py
 
 ```python
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from scripts.predict import predict
 
-# Load saved model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained("artifacts/distilbert")
-model = AutoModelForSequenceClassification.from_pretrained("artifacts/distilbert")
+# Classify a new article
+result = predict(
+    title="US stocks rise as inflation data boosts investor confidence",
+    body="US equity markets climbed on Tuesday after fresh inflation data..."
+)
 
-# Predict topic for new article
-text = "Breaking news from the tech industry..."
-inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=256)
-outputs = model(**inputs)
-
-# Get predicted class
-predicted_class = outputs.logits.argmax(dim=-1).item()
-topics = ["World", "Sports", "Business", "Sci/Tech"]
-print(f"Topic: {topics[predicted_class]}")
+# Returns:
+# {
+#     "prediction": "Business",
+#     "confidence": 0.9234,
+#     "all_probabilities": {
+#         "World": 0.0234,
+#         "Sports": 0.0112,
+#         "Business": 0.9234,
+#         "Sci/Tech": 0.0420
+#     }
+# }
 ```
+
+### Prediction Workflow
+
+```
+New Article (title + body)
+    ↓
+Tokenizer (DistilBERT)
+    ↓
+Token IDs [101, 8149, ...] + Attention Mask
+    ↓
+Model Forward Pass (no gradients, eval mode)
+    ↓
+Logits [1.23, -0.45, 3.21, 0.67]
+    ↓
+Softmax → Probabilities [0.023, 0.112, 0.923, 0.042]
+    ↓
+Argmax → Predicted Class (index 2 = "Business")
+    ↓
+Result: {prediction, confidence, all_probabilities}
+```
+
+### Key Features of Inference
+
+1. **No Gradients**: Uses `torch.no_grad()` context for memory efficiency
+2. **Eval Mode**: Sets model to evaluation mode (disables dropout)
+3. **Device Management**: Automatically uses GPU if available, falls back to CPU
+4. **Probability Scores**: Returns all class probabilities for transparency
+5. **Confidence Metric**: Top prediction probability indicates model certainty
+
+### Handling Predictions
+
+```python
+result = predict(title, body)
+
+# Check confidence
+if result['confidence'] > 0.85:
+    print(f"High confidence: {result['prediction']}")
+elif result['confidence'] > 0.60:
+    print(f"Medium confidence: {result['prediction']}")
+else:
+    print(f"Low confidence - manual review recommended")
+    print(f"Probabilities: {result['all_probabilities']}")
+```
+
+---
+
+## 🧪 Testing & Validation
+
+### Structured Test Suite
+
+Located in `data/test_examples.md`, includes 6 test cases:
+
+1. **Business (Clear Case)**
+   - Expected: High confidence (>0.85)
+   - Tests: Clear financial/business domain vocabulary
+
+2. **Sports (Very Strong Signal)**
+   - Expected: Very high confidence (>0.90)
+   - Tests: Distinctive sports terminology
+
+3. **World (Geopolitical)**
+   - Expected: High confidence (0.85-0.95)
+   - Tests: International relations vocabulary
+
+4. **Sci/Tech (Technology)**
+   - Expected: High confidence (0.85-0.95)
+   - Tests: Technical domain signals
+
+5. **Ambiguous Case (Business vs Sci/Tech)**
+   - Expected: Medium confidence (0.60-0.75)
+   - Tests: Edge case handling and uncertainty detection
+
+6. **Weak/Noisy Input**
+   - Expected: Low confidence (<0.60)
+   - Tests: Robustness to poor input quality
+
+### Running Tests
+
+```bash
+# Manual testing with test_examples.md
+python scripts/predict.py
+# Then manually compare output against expected values in test_examples.md
+
+# Or use evaluate_distilbert.py with test.jsonl
+python scripts/evaluate_distilbert.py
+```
+
+### Success Criteria
+
+| Test Case | Metric | Success |
+|-----------|--------|---------|
+| Clear cases | Confidence | >0.85 |
+| Strong signals | Confidence | >0.90 |
+| Ambiguous | Confidence | 0.55-0.75 |
+| Noisy input | Confidence | <0.60 |
 
 ---
 
@@ -376,9 +486,26 @@ print(f"Topic: {topics[predicted_class]}")
 
 1. **Run Training**: `python -m scripts.train_distilbert`
 2. **Monitor Progress**: Check `logs/` directory for detailed logs
-3. **Evaluate**: Create evaluation script using `src/metrics.py`
-4. **Deploy**: Use saved model for inference on new articles
-5. **Improve**: Experiment with hyperparameters, more data, different architectures
+3. **Test Model**: Run predictions using `scripts/predict.py`
+4. **Validate**: Compare outputs against `data/test_examples.md`
+5. **Evaluate**: Use `scripts/evaluate_distilbert.py` on test set
+6. **Deploy**: Use saved model for inference on new articles
+7. **Improve**: Experiment with hyperparameters, more data, different architectures
+
+---
+
+## 📚 Code Documentation
+
+### predict.py - Inference Script
+
+The prediction script includes comprehensive comments explaining:
+- Device detection and model loading
+- Tokenization process
+- Inference without gradient computation
+- Probability calculation via softmax
+- Result structuring and formatting
+
+Each function has detailed docstrings with parameter descriptions and return value specifications.
 
 ---
 

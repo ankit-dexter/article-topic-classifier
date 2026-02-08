@@ -86,29 +86,55 @@ Training will:
 
 **Expected runtime:** ~5-10 minutes on GPU, ~30 minutes on CPU
 
-### 5. Use the Trained Model
+### 5. Make Predictions on New Articles
 
-```python
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
-
-# Load model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained("artifacts/distilbert")
-model = AutoModelForSequenceClassification.from_pretrained("artifacts/distilbert")
-
-# Predict topic for new article
-text = "Latest technology breakthrough announced today..."
-inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=256)
-outputs = model(**inputs)
-
-# Get prediction
-logits = outputs.logits
-predicted_class = logits.argmax(dim=-1).item()
-topics = ["World", "Sports", "Business", "Sci/Tech"]
-
-print(f"Predicted Topic: {topics[predicted_class]}")
-print(f"Confidence: {torch.softmax(logits, dim=-1)[0][predicted_class]:.2%}")
+```bash
+# Run the prediction script with your article
+python scripts/predict.py
 ```
+
+**Prediction Output:**
+```
+Prediction Result:
+Predicted topic : Business
+Confidence      : 0.8234
+
+Probabilities:
+  World      → 0.0523
+  Sports     → 0.0187
+  Business   → 0.8234
+  Sci/Tech   → 0.1056
+```
+
+**Using the predict function in your code:**
+```python
+from scripts.predict import predict
+
+# Classify an article
+result = predict(
+    title="Tech firms report strong quarterly earnings",
+    body="Several major technology companies reported better-than-expected earnings..."
+)
+
+print(f"Topic: {result['prediction']}")
+print(f"Confidence: {result['confidence']}")
+print(f"All probabilities: {result['all_probabilities']}")
+```
+
+### 6. Test with Structured Examples
+
+We provide a structured test suite with 6 test cases covering various scenarios:
+
+```bash
+cat data/test_examples.md
+```
+
+Test cases include:
+- ✅ **Clear classifications** (Business, Sports, World, Sci/Tech)
+- ⚠️ **Ambiguous cases** (e.g., Business vs Sci/Tech)
+- ❌ **Weak/noisy inputs** (edge cases)
+
+Each test includes expected output and confidence thresholds for validation.
 
 ---
 
@@ -117,13 +143,21 @@ print(f"Confidence: {torch.softmax(logits, dim=-1)[0][predicted_class]:.2%}")
 ```
 article-topic-classifier/
 ├── config/
-│   └── train.yaml                    # Training hyperparameters
+│   ├── train.yaml                    # Training hyperparameters
+│   └── ARCHITECTURE.md              # Detailed architecture guide
 ├── data/
 │   ├── README.md
-│   └── part-0001.jsonl              # Training dataset
+│   ├── part-0001.jsonl              # Training dataset
+│   ├── test.jsonl                   # Test dataset
+│   ├── train.jsonl                  # Training split
+│   ├── val.jsonl                    # Validation split
+│   └── test_examples.md             # 6 structured test cases
 ├── scripts/
 │   ├── data_sanity_check.py         # Validate data before training
-│   └── train_distilbert.py          # Main training script
+│   ├── split_dataset.py             # Split data into train/val/test
+│   ├── train_distilbert.py          # Main training script
+│   ├── evaluate_distilbert.py       # Evaluation script
+│   └── predict.py                   # Inference on new articles
 ├── src/
 │   ├── __init__.py
 │   ├── dataset.py                   # Custom PyTorch dataset
@@ -135,9 +169,6 @@ article-topic-classifier/
 │   └── [Jupyter notebooks for analysis]
 ├── logs/
 │   └── training_*.log               # Training logs
-├── config/
-│   ├── train.yaml                    # Training hyperparameters
-│   └── ARCHITECTURE.md              # Detailed architecture guide
 ├── requirements.txt                 # Python dependencies
 └── README.md                        # This file
 ```
@@ -265,6 +296,12 @@ Lower loss = better predictions ✓
 - Loads config, initializes model, runs training loop
 - Saves trained model and tokenizer
 
+**[predict.py](scripts/predict.py)**
+- Inference script for classifying new articles
+- Handles tokenization, model loading, and prediction
+- Returns detailed probability scores for all topics
+- Includes comprehensive code comments for understanding
+
 **[dataset.py](src/dataset.py)**
 - Custom PyTorch Dataset class
 - Handles JSONL loading, tokenization, label mapping
@@ -274,6 +311,18 @@ Lower loss = better predictions ✓
 - Logging configuration function
 - Sets up file and console handlers
 - Supports UTF-8 encoding for special characters
+
+**[metrics.py](src/metrics.py)**
+- Evaluation metrics (accuracy, precision, recall, F1)
+- Used for assessing model performance
+
+### Testing & Validation
+
+**[test_examples.md](data/test_examples.md)**
+- 6 structured test cases with expected outputs
+- Covers clear cases, ambiguous cases, and edge cases
+- Includes confidence thresholds and rationales
+- Useful for validating model behavior
 
 For detailed explanations of how everything works together, see [ARCHITECTURE.md](config/ARCHITECTURE.md).
 
@@ -336,13 +385,16 @@ See [requirements.txt](requirements.txt) for full dependency list.
 
 ## 🚀 Future Improvements
 
+- [x] Add structured test examples with expected outputs
+- [x] Add prediction/inference script with detailed comments
 - [ ] Add validation set and evaluation metrics
 - [ ] Implement model checkpointing (save best model)
-- [ ] Add inference script for batch predictions
+- [ ] Add batch prediction script
 - [ ] Support for other models (BERT, RoBERTa, etc.)
 - [ ] Data augmentation techniques
 - [ ] Confidence thresholding for uncertain predictions
 - [ ] Model distillation for faster inference
+- [ ] API endpoint for real-time predictions
 
 ---
 
@@ -382,3 +434,5 @@ For issues, questions, or suggestions:
 ---
 
 **Happy training! 🚀**
+
+https://chatgpt.com/share/e/6987974f-1680-8010-afa5-76312a56c790

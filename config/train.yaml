@@ -3,7 +3,7 @@ model:
   num_labels: 4
 
 data:
-  train_jsonl: data/part-0001.jsonl
+  train_jsonl: data/train.jsonl
   text_fields: ["title", "body"]
 
 training:
