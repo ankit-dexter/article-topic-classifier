@@ -1,140 +1,74 @@
-# 📰 Article Topic Classifier
-
-A deep learning project that automatically classifies news articles into 4 categories using a fine-tuned **DistilBERT** model. Built with PyTorch and Hugging Face Transformers.
+# 📰 Article Topic Classification – Production-Style NLP System
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red.svg)](https://pytorch.org/)
 [![Transformers](https://img.shields.io/badge/Transformers-4.0%2B-brightgreen.svg)](https://huggingface.co/transformers/)
 
----
-
-## 🎯 Features
-
-- ✨ **Transfer Learning**: Fine-tuned DistilBERT pre-trained model
-- ⚡ **Fast & Lightweight**: DistilBERT is 40% smaller and 60% faster than BERT
-- 📊 **4-Class Classification**: World, Sports, Business, Sci/Tech
-- 📝 **Comprehensive Logging**: Detailed training logs to file + console output
-- 🔧 **Configurable**: YAML-based hyperparameter management
-- 📈 **Production-Ready**: Model saved in Hugging Face format for easy deployment
-- 💻 **Well-Documented**: Extensive code comments and architecture guide
+A production-oriented **end-to-end NLP system** that classifies news articles into four topics using a fine‑tuned **DistilBERT** model.
+This project goes beyond model training and demonstrates **real industry ML practices**: clean data pipelines, proper evaluation, confidence‑aware decision logic, batch processing, and a deployable FastAPI service.
 
 ---
 
-## 📋 Project Overview
+## 🎯 Problem Statement
 
-This project demonstrates:
-- How to load and preprocess text data
-- Fine-tuning pre-trained transformer models
-- Building custom PyTorch datasets
-- Implementing training loops with proper logging
-- Saving and loading models for inference
+Given a news article (title + body), automatically predict its primary topic:
 
-**Model Performance:**
-- Trained on 500 news articles
-- 4 epochs with batch size 16
-- Achieves high accuracy on all 4 topic categories
+* **World**
+* **Sports**
+* **Business**
+* **Sci/Tech**
+
+The system must also:
+
+* Return a confidence score
+* Expose probabilities for all classes
+* Decide whether a prediction can be auto‑accepted or needs human review
 
 ---
 
-## 🚀 Quick Start
+## ✨ Key Features
 
-### 1. Installation
+* **Modern Transformer Model**: Fine‑tuned DistilBERT (fast, lightweight, production‑friendly)
+* **End‑to‑End ML Lifecycle**: Data → Training → Evaluation → Inference → API
+* **Confidence‑Aware Decisions**: Auto‑accept / Needs‑review / Reject logic
+* **Batch Inference Support**: Process large article sets efficiently
+* **FastAPI Service**: Deployable REST API with modern ASGI lifespan handling
+* **GPU‑Accelerated Training**: PyTorch + CUDA
 
-```bash
-# Clone or download the project
-cd article-topic-classifier
+---
 
-# Install dependencies
-pip install -r requirements.txt
+## 🧠 Why DistilBERT?
+
+DistilBERT retains ~95% of BERT’s accuracy while being ~40% smaller and ~60% faster.
+
+**Chosen because:**
+
+* Strong pretrained language understanding
+* Lower latency and cost than full BERT
+* Widely used in real production NLP systems
+* Excellent fit for topic classification
+
+---
+
+## 🏗️ System Architecture
+
 ```
-
-### 2. Prepare Data
-
-Place your training data at `data/part-0001.jsonl` in JSON Lines format:
-
-```json
-{"title": "Breaking News Story", "body": "Full article text here...", "topic": "World"}
-{"title": "Game Highlights", "body": "Sports coverage...", "topic": "Sports"}
-{"title": "Market Update", "body": "Business news...", "topic": "Business"}
-{"title": "Tech Innovation", "body": "Science and technology...", "topic": "Sci/Tech"}
+Raw Data (CSV)
+   ↓
+Data Conversion Pipeline
+(CSV → XML / JSONL / Parquet)
+   ↓
+Train / Validation / Test Split
+   ↓
+Model Training (DistilBERT)
+   ↓
+Evaluation on Unseen Data
+   ↓
+Inference Layer
+   ├─ Single Prediction
+   ├─ Batch Inference
+   └─ FastAPI Service
 ```
-
-### 3. Validate Data
-
-```bash
-python scripts/data_sanity_check.py
-```
-
-This script checks:
-- Total number of articles
-- Topic distribution
-- Token length statistics
-- Articles exceeding 512 token limit
-
-### 4. Train the Model
-
-```bash
-python -m scripts.train_distilbert
-```
-
-Training will:
-- Load configuration from `config/train.yaml`
-- Download DistilBERT tokenizer and model (268 MB)
-- Fine-tune for 3 epochs
-- Save model to `artifacts/distilbert/`
-- Log progress to console and `logs/` directory
-
-**Expected runtime:** ~5-10 minutes on GPU, ~30 minutes on CPU
-
-### 5. Make Predictions on New Articles
-
-```bash
-# Run the prediction script with your article
-python scripts/predict.py
-```
-
-**Prediction Output:**
-```
-Prediction Result:
-Predicted topic : Business
-Confidence      : 0.8234
-
-Probabilities:
-  World      → 0.0523
-  Sports     → 0.0187
-  Business   → 0.8234
-  Sci/Tech   → 0.1056
-```
-
-**Using the predict function in your code:**
-```python
-from scripts.predict import predict
-
-# Classify an article
-result = predict(
-    title="Tech firms report strong quarterly earnings",
-    body="Several major technology companies reported better-than-expected earnings..."
-)
-
-print(f"Topic: {result['prediction']}")
-print(f"Confidence: {result['confidence']}")
-print(f"All probabilities: {result['all_probabilities']}")
-```
-
-### 6. Test with Structured Examples
-
-We provide a structured test suite with 6 test cases covering various scenarios:
-
-```bash
-cat data/test_examples.md
-```
-
-Test cases include:
-- ✅ **Clear classifications** (Business, Sports, World, Sci/Tech)
-- ⚠️ **Ambiguous cases** (e.g., Business vs Sci/Tech)
-- ❌ **Weak/noisy inputs** (edge cases)
-
-Each test includes expected output and confidence thresholds for validation.
 
 ---
 
@@ -142,297 +76,166 @@ Each test includes expected output and confidence thresholds for validation.
 
 ```
 article-topic-classifier/
-├── config/
-│   ├── train.yaml                    # Training hyperparameters
-│   └── ARCHITECTURE.md              # Detailed architecture guide
-├── data/
-│   ├── README.md
-│   ├── part-0001.jsonl              # Training dataset
-│   ├── test.jsonl                   # Test dataset
-│   ├── train.jsonl                  # Training split
-│   ├── val.jsonl                    # Validation split
-│   └── test_examples.md             # 6 structured test cases
-├── scripts/
-│   ├── data_sanity_check.py         # Validate data before training
-│   ├── split_dataset.py             # Split data into train/val/test
-│   ├── train_distilbert.py          # Main training script
-│   ├── evaluate_distilbert.py       # Evaluation script
-│   └── predict.py                   # Inference on new articles
-├── src/
-│   ├── __init__.py
-│   ├── dataset.py                   # Custom PyTorch dataset
-│   ├── metrics.py                   # Evaluation metrics
-│   └── utils.py                     # Logging utilities
+├── api/
+│   └── app.py              # FastAPI service
 ├── artifacts/
-│   └── distilbert/                  # Saved model & tokenizer
-├── notebooks/
-│   └── [Jupyter notebooks for analysis]
+│   └── distilbert/         # Trained model & tokenizer
+├── config/
+│   └── train.yaml          # Training configuration
+├── data/
+│   ├── train.jsonl
+│   ├── val.jsonl
+│   └── test.jsonl
+├── scripts/
+│   ├── data_sanity_check.py
+│   ├── split_dataset.py
+│   ├── train_distilbert.py
+│   ├── evaluate_distilbert.py
+│   ├── predict.py          # Single inference
+│   └── batch_predict.py    # Batch inference
+├── src/
+│   └── dataset.py          # PyTorch Dataset
 ├── logs/
-│   └── training_*.log               # Training logs
-├── requirements.txt                 # Python dependencies
-└── README.md                        # This file
+│   └── training_*.log
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## ⚙️ Configuration
+## 🔍 Confidence‑Aware Decision Logic
 
-Edit `config/train.yaml` to customize training:
+Predictions are not blindly trusted. The system applies routing rules:
 
-```yaml
-model:
-  name: distilbert-base-uncased      # HuggingFace model ID
-  num_labels: 4                      # Number of topic classes
+* **auto_accept**
 
-data:
-  train_jsonl: data/part-0001.jsonl # Path to training data
-  text_fields: ["title", "body"]    # Fields to concatenate
+  * confidence ≥ 0.85
+  * top‑1 vs top‑2 probability gap ≥ 0.20
 
-training:
-  epochs: 3                          # Number of training passes
-  batch_size: 16                     # Samples per batch
-  learning_rate: 0.00002            # Optimizer learning rate
-  max_length: 256                    # Token sequence length
-  weight_decay: 0.01                # L2 regularization
-  warmup_ratio: 0.1                 # Warmup as % of total steps
+* **needs_review**
 
-output:
-  dir: artifacts/distilbert         # Where to save model
+  * confidence ≥ 0.60 but ambiguous
+
+* **reject**
+
+  * confidence < 0.60
+
+This mirrors how real editorial and enterprise ML systems manage risk.
+
+---
+
+## 🚀 Training
+
+```bash
+python -m scripts.train_distilbert
 ```
 
-### Hyperparameter Tuning Tips
-
-| Parameter | Effect | Recommendation |
-|-----------|--------|-----------------|
-| `epochs` | Training duration | 2-5 for fine-tuning |
-| `batch_size` | Speed vs Memory | 8-32 depending on GPU |
-| `learning_rate` | Update speed | 1e-5 to 5e-5 for fine-tuning |
-| `max_length` | Token limit | 128-512 (256 is good middle ground) |
-| `weight_decay` | Overfitting prevention | 0.01-0.1 |
+* Uses GPU if available
+* Trains DistilBERT for topic classification
+* Saves model and tokenizer to `artifacts/distilbert/`
 
 ---
 
-## 📊 Training Details
+## 📊 Evaluation
 
-### Data Flow
-
-```
-Raw Text (JSONL)
-    ↓
-Tokenizer (DistilBERT WordPiece)
-    ↓
-Token IDs + Attention Mask
-    ↓
-DistilBERT Model (6 transformer layers)
-    ↓
-Classification Head (4-way softmax)
-    ↓
-Predicted Topic
+```bash
+python -m scripts.evaluate_distilbert
 ```
 
-### Training Loop
+Evaluation is performed on **unseen test data** and reports:
 
-1. **Forward Pass**: Compute predictions and loss
-2. **Backward Pass**: Calculate gradients
-3. **Optimizer Step**: Update weights using AdamW
-4. **Scheduler Step**: Adjust learning rate (warmup then decay)
-5. **Log Progress**: Every ~20% of batches per epoch
+* Accuracy
+* Precision / Recall / F1 per class
+* Confusion matrix
+* Confidence statistics
 
-### Model Architecture
-
-- **Base Model**: DistilBERT (6 transformer layers, 66M parameters)
-- **Tokenizer**: WordPiece (30,522 vocabulary)
-- **Embedding Dim**: 768
-- **Classification Head**: Linear layer (768 → 4)
-- **Total Parameters**: ~67M
+**Example result:** ~90% accuracy with balanced class performance.
 
 ---
 
-## 📈 Monitoring Training
+## 🧪 Inference
 
-### Console Output
+### Single Article
 
-Training progress is logged to both console and file:
-
-```
-INFO - Loading configuration from config/train.yaml
-INFO - Using device: cuda
-INFO - Dataset loaded: 500 samples
-INFO - DataLoader created: 32 batches
-INFO - Starting training for 3 epochs
-
-INFO - Epoch 1/3
-INFO -   Batch 6/31 | Loss: 1.3245
-INFO -   Batch 12/31 | Loss: 1.1234
-INFO -   Batch 19/31 | Loss: 0.9834
-INFO - Epoch 1 completed | Avg Loss: 0.9456
-...
-INFO - [SUCCESS] Model and tokenizer saved successfully
+```bash
+python -m scripts.predict
 ```
 
-### Log Files
+Returns:
 
-Detailed logs saved to `logs/training_YYYYMMDD_HHMMSS.log`:
-- Timestamps for all operations
-- Module names and debug information
-- Full error traces for debugging
+* predicted topic
+* confidence
+* probabilities for all classes
+* decision (auto_accept / needs_review / reject)
 
-### Checking Loss
+### Batch Inference
 
-- **Starting loss**: ~1.4 (random predictions)
-- **After epoch 1**: ~0.8-1.0 (improving)
-- **After epoch 3**: ~0.3-0.6 (good convergence)
+```bash
+python -m scripts.batch_predict
+```
 
-Lower loss = better predictions ✓
-
----
-
-## 🔍 Understanding the Code
-
-### Key Files Explained
-
-**[train_distilbert.py](scripts/train_distilbert.py)**
-- Main training script with detailed comments
-- Loads config, initializes model, runs training loop
-- Saves trained model and tokenizer
-
-**[predict.py](scripts/predict.py)**
-- Inference script for classifying new articles
-- Handles tokenization, model loading, and prediction
-- Returns detailed probability scores for all topics
-- Includes comprehensive code comments for understanding
-
-**[dataset.py](src/dataset.py)**
-- Custom PyTorch Dataset class
-- Handles JSONL loading, tokenization, label mapping
-- Creates attention masks and pads sequences
-
-**[utils.py](src/utils.py)**
-- Logging configuration function
-- Sets up file and console handlers
-- Supports UTF-8 encoding for special characters
-
-**[metrics.py](src/metrics.py)**
-- Evaluation metrics (accuracy, precision, recall, F1)
-- Used for assessing model performance
-
-### Testing & Validation
-
-**[test_examples.md](data/test_examples.md)**
-- 6 structured test cases with expected outputs
-- Covers clear cases, ambiguous cases, and edge cases
-- Includes confidence thresholds and rationales
-- Useful for validating model behavior
-
-For detailed explanations of how everything works together, see [ARCHITECTURE.md](config/ARCHITECTURE.md).
+Processes an entire JSONL file and produces a JSONL output with predictions and decisions for each article.
 
 ---
 
-## 🛠️ Troubleshooting
+## 🌐 API Service (FastAPI)
 
-### Issue: `FileNotFoundError: data/part-0001.jsonl`
-**Solution**: Ensure your training data is at the correct path and in JSONL format.
+Run the API:
 
-### Issue: `CUDA out of memory`
-**Solution**: Reduce `batch_size` in config.yaml (try 8 or 4).
+```bash
+uvicorn api.app:app --reload
+```
 
-### Issue: Loss not decreasing
-**Solution**: 
-- Adjust learning_rate (try 0.00001 or 0.00005)
-- Increase epochs (try 5-10)
-- Check data quality with `scripts/data_sanity_check.py`
+Endpoints:
 
-### Issue: `UnicodeEncodeError` on Windows
-**Solution**: Already fixed! We use UTF-8 encoding for all file handlers.
+* `POST /predict` — single article
+* `POST /batch_predict` — multiple articles
 
----
+Interactive docs:
 
-## 📚 Learn More
-
-### Documentation
-- [ARCHITECTURE.md](config/ARCHITECTURE.md) - Complete architecture guide with visualizations
-- [Hugging Face Transformers](https://huggingface.co/transformers/) - Official documentation
-- [PyTorch Tutorials](https://pytorch.org/tutorials/) - Learning resources
-
-### Papers & References
-- [Attention is All You Need](https://arxiv.org/abs/1706.03762) - Original Transformer paper
-- [BERT: Pre-training of Deep Bidirectional Transformers](https://arxiv.org/abs/1810.04805) - BERT paper
-- [DistilBERT, a distilled version of BERT](https://arxiv.org/abs/1910.01108) - DistilBERT paper
+```
+http://127.0.0.1:8000/docs
+```
 
 ---
 
-## 📦 Requirements
+## 🛠️ Tech Stack
 
-- Python 3.8+
-- PyTorch 2.0+
-- Transformers 4.0+
-- CUDA 11.8+ (optional, for GPU acceleration)
-
-See [requirements.txt](requirements.txt) for full dependency list.
-
----
-
-## 💡 Tips for Better Results
-
-1. **More Data**: 500 articles is good for demo. 5,000+ for production.
-2. **Balanced Classes**: Ensure roughly equal samples per topic.
-3. **Clean Data**: Remove HTML tags, fix encoding issues.
-4. **Longer Training**: Try 5-10 epochs if you have time.
-5. **Ensemble**: Train multiple models, average predictions.
-6. **Evaluation Set**: Always keep 20% of data for validation.
+* Python
+* PyTorch
+* Hugging Face Transformers
+* DistilBERT
+* FastAPI
+* scikit‑learn
+* JSONL / Parquet
 
 ---
 
-## 🚀 Future Improvements
+## ✅ What This Project Demonstrates
 
-- [x] Add structured test examples with expected outputs
-- [x] Add prediction/inference script with detailed comments
-- [ ] Add validation set and evaluation metrics
-- [ ] Implement model checkpointing (save best model)
-- [ ] Add batch prediction script
-- [ ] Support for other models (BERT, RoBERTa, etc.)
-- [ ] Data augmentation techniques
-- [ ] Confidence thresholding for uncertain predictions
-- [ ] Model distillation for faster inference
-- [ ] API endpoint for real-time predictions
+* Clean separation of data, model, and serving layers
+* Proper train/validation/test isolation
+* Confidence‑aware ML decision making
+* Batch vs real‑time inference patterns
+* Production‑ready API design
+
+---
+
+## 🔮 Future Extensions (V2 Ideas)
+
+* Vector embeddings for semantic search
+* LLM (LLaMA) integration for summarization
+* Model monitoring & drift detection
+* Dockerized deployment
 
 ---
 
 ## 📄 License
 
-This project is open source and available under the MIT License.
+MIT License
 
 ---
 
-## 🤝 Contributing
+## Summary
 
-Contributions welcome! To contribute:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📞 Support
-
-For issues, questions, or suggestions:
-1. Check [ARCHITECTURE.md](config/ARCHITECTURE.md) for detailed explanations
-2. Review [Troubleshooting](#-troubleshooting) section
-3. Check log files in `logs/` directory
-
----
-
-## 🙏 Acknowledgments
-
-- [Hugging Face](https://huggingface.co/) for transformers library
-- [PyTorch](https://pytorch.org/) team
-- Original researchers behind BERT and DistilBERT
-
----
-
-**Happy training! 🚀**
-
-https://chatgpt.com/share/e/6987974f-1680-8010-afa5-76312a56c790
+This repository demonstrates how to build a **realistic, production‑ready NLP system**, not just a model. It reflects how modern ML is designed, evaluated, and served in industry.
