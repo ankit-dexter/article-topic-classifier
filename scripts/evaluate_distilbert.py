@@ -10,12 +10,13 @@ This script:
 """
 
 import json  # Parse JSON if needed
+from scripts.calibration_analysis import compute_ece
 import torch  # PyTorch deep learning framework
 import logging  # Logging for evaluation progress
 import numpy as np  # Numerical computations
 from sklearn.metrics import classification_report, confusion_matrix  # Evaluation metrics
 from transformers import AutoTokenizer, AutoModelForSequenceClassification  # Load model
-
+from scripts.calibration_analysis import coverage_accuracy_curve
 from src.dataset import NewsDataset  # Custom dataset class
 
 # Configure logging
@@ -42,7 +43,7 @@ def main():
     2. Evaluates on dataset
     3. Computes and prints metrics
     """
-    
+
     # ========== SETUP DEVICE ==========
     # Use GPU if available, otherwise CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,7 +126,7 @@ def main():
             # Store maximum probability (confidence) for each prediction
             # probs.max(dim=1) returns (values, indices)
             # We only want the values (confidence scores)
-            all_probs.extend(probs.max(dim=1).values.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
             
             # Log progress every batch
             if (batch_idx + 1) % max(1, len(loader) // 4) == 0:
@@ -156,10 +157,16 @@ def main():
     # ===== CONFIDENCE STATISTICS =====
     # Analyze model's certainty in its predictions
     logger.info("\n=== CONFIDENCE STATS ===")
-    avg_conf = np.mean(all_probs)
-    min_conf = np.min(all_probs)
-    max_conf = np.max(all_probs)
+    all_probs = np.array(all_probs)
+    all_labels = np.array(all_labels)
+
+    confidences = np.max(all_probs, axis=1)
+
+    avg_conf = np.mean(confidences)
+    min_conf = np.min(confidences)
+    max_conf = np.max(confidences)
     
+
     logger.info(f"Average confidence: {avg_conf:.3f} (higher = more certain)")
     logger.info(f"Min confidence: {min_conf:.3f} (least certain prediction)")
     logger.info(f"Max confidence: {max_conf:.3f} (most certain prediction)")
@@ -171,6 +178,17 @@ def main():
     logger.info("=" * 80)
     logger.info("Evaluation completed successfully!")
     logger.info("=" * 80)
+
+    
+    ece = compute_ece(np.array(all_probs), np.array(all_labels))
+    print(f"Validation ECE: {ece:.4f}")
+    curve = coverage_accuracy_curve(all_probs, all_labels)
+
+    print("\nThreshold | Coverage | Accuracy")
+    print("----------------------------------")
+    for t, cov, acc in curve:
+        print(f"{t:.2f}      | {cov:.3f}    | {acc:.3f}")
+
 
 if __name__ == "__main__":
     main()
