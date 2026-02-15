@@ -2,108 +2,236 @@
 """
 Article Topic Classification API
 
-A FastAPI-based REST API for classifying article topics using DistilBERT.
+This service performs inference using a fine-tuned DistilBERT model.
+It supports two model loading modes:
 
-This service performs **inference only** (no training) and applies
-confidence-based rules to decide how predictions should be routed:
-- auto_accept   → High confidence, safe to use directly
-- needs_review  → Medium confidence, requires human validation
-- reject        → Low confidence, prediction should not be trusted
+1. Local filesystem (development / initial EC2 deployment)
+2. S3-based model registry (production ECS deployment)
 
-Endpoints:
-    POST /predict        - Classify a single article
-    POST /batch_predict  - Classify multiple articles in one request
+In production, the model is stored in S3 as a versioned artifact:
+    s3://bucket/models/topicclf/<version>/model.tar.gz
 
-Run locally:
-    uvicorn app:app --reload
+A pointer file (latest.json) determines which model is active:
+    s3://bucket/models/topicclf/latest.json
+
+This allows:
+- Versioned model management
+- Zero Docker image rebuild for model updates
+- Clean separation of inference and training
 """
 
+import os
+import json
+import tarfile
+import shutil
+from pathlib import Path
+from urllib.parse import urlparse
+
 import torch
+import boto3
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict
 from contextlib import asynccontextmanager
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# Global objects (initialized once at startup to avoid reloading per request)
+
+# ==============================
+# Configuration
+# ==============================
+
+# MODEL_URI can be:
+# - Local directory (default: artifacts/distilbert)
+# - s3://bucket/path/model.tar.gz
+# - s3://bucket/path/latest.json
+MODEL_URI = os.getenv("MODEL_URI", "artifacts/distilbert")
+
+# Local directory where S3 models are downloaded and extracted
+MODEL_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", "/tmp/topicclf_model")
+
+# Maximum input token length
+MAX_LENGTH = 256
+
+# Label order must match training configuration
+LABELS = ["World", "Sports", "Business", "Sci/Tech"]
+
+# Confidence routing thresholds
+AUTO_ACCEPT_CONF = 0.85
+AUTO_ACCEPT_GAP = 0.20
+REVIEW_CONF = 0.60
+
+
+# ==============================
+# Global Objects (loaded once)
+# ==============================
+
 tokenizer = None
 model = None
 device = None
 
-# ---------------- CONFIG ---------------- #
-# Path to the fine-tuned DistilBERT model
-MODEL_DIR = "artifacts/distilbert"
+# S3 client (credentials resolved via IAM role in ECS/EC2)
+s3 = boto3.client("s3")
 
-# Maximum token length for inputs
-MAX_LENGTH = 256
 
-# Output labels in the same order as the model logits
-LABELS = ["World", "Sports", "Business", "Sci/Tech"]
+# ==============================
+# Model Download Utilities
+# ==============================
 
-# Confidence thresholds for routing predictions
-AUTO_ACCEPT_CONF = 0.85   # Very confident prediction
-AUTO_ACCEPT_GAP = 0.20    # Clear separation from second-best class
-REVIEW_CONF = 0.60        # Minimum confidence for human review
-# --------------------------------------- #
+def is_s3_uri(uri: str) -> bool:
+    """Check whether URI is an S3 path."""
+    return uri.startswith("s3://")
 
-# ---------- Lifespan (startup / shutdown) ---------- #
+
+def download_s3_object(bucket: str, key: str, destination: Path):
+    """
+    Download a single object from S3 to local filesystem.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    s3.download_file(bucket, key, str(destination))
+
+
+def prepare_model_from_uri(model_uri: str) -> str:
+    """
+    Resolve MODEL_URI into a local filesystem path
+    containing HuggingFace model files.
+
+    Supports:
+    - Local directory
+    - S3 model artifact (.tar.gz)
+    - S3 latest.json pointer
+
+    Returns:
+        str → local path to model directory
+    """
+
+    # -----------------------------
+    # Case 1: Local directory
+    # -----------------------------
+    if not is_s3_uri(model_uri):
+        if not Path(model_uri).exists():
+            raise FileNotFoundError(f"Local MODEL_URI not found: {model_uri}")
+        return model_uri
+
+    # -----------------------------
+    # Case 2: S3 path
+    # -----------------------------
+    parsed = urlparse(model_uri)
+    bucket = parsed.netloc
+    key = parsed.path.lstrip("/")
+
+    cache_root = Path(MODEL_CACHE_DIR)
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    # -----------------------------
+    # Case 2A: latest.json pointer
+    # -----------------------------
+    if key.endswith(".json"):
+        local_json = cache_root / "latest.json"
+        download_s3_object(bucket, key, local_json)
+
+        with open(local_json, "r") as f:
+            metadata = json.load(f)
+
+        # latest.json must contain:
+        # { "artifact_uri": "s3://bucket/.../model.tar.gz" }
+        artifact_uri = metadata.get("artifact_uri")
+        if not artifact_uri:
+            raise ValueError("latest.json missing 'artifact_uri' field")
+
+        # Recursively resolve artifact URI
+        return prepare_model_from_uri(artifact_uri)
+
+    # -----------------------------
+    # Case 2B: Direct tar.gz artifact
+    # -----------------------------
+    if not (key.endswith(".tar.gz") or key.endswith(".tgz")):
+        raise ValueError("S3 MODEL_URI must point to .tar.gz or latest.json")
+
+    local_tar = cache_root / "model.tar.gz"
+    download_s3_object(bucket, key, local_tar)
+
+    extract_dir = cache_root / "extracted"
+
+    # Clean extraction directory to avoid mixing versions
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    # Extract model archive
+    with tarfile.open(local_tar, "r:gz") as tar:
+        tar.extractall(path=extract_dir)
+
+    # Find directory containing HuggingFace model files
+    for root, dirs, files in os.walk(extract_dir):
+        if "config.json" in files:
+            return root
+
+    raise RuntimeError("Could not locate HuggingFace model files after extraction")
+
+
+# ==============================
+# FastAPI Lifespan Manager
+# ==============================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    FastAPI lifespan manager.
+    FastAPI lifecycle hook.
 
-    Runs once when the app starts:
-    - Selects device (GPU / CPU)
-    - Loads tokenizer and model into memory
+    Runs once on startup:
+    - Selects device (GPU if available)
+    - Resolves MODEL_URI (local or S3)
+    - Loads tokenizer + model into memory
     - Switches model to evaluation mode
 
-    Ensures model is NOT reloaded on every request.
+    Ensures:
+    - Model is loaded once
+    - No reloading per request
     """
+
     global tokenizer, model, device
 
-    # Use GPU if available, otherwise fall back to CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load tokenizer and trained model from disk
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
+    print(f"🔄 Loading model from: {MODEL_URI}")
 
-    # Move model to selected device and disable training-specific layers
+    local_model_path = prepare_model_from_uri(MODEL_URI)
+
+    tokenizer = AutoTokenizer.from_pretrained(local_model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(local_model_path)
+
     model.to(device)
     model.eval()
 
-    print(f"✅ Model loaded on {device}")
+    print(f"✅ Model successfully loaded on {device}")
 
-    yield  # ---- API is running and serving requests here ----
+    yield
 
-    # Optional cleanup logic during shutdown
-    print("🛑 Shutting down API")
+    print("🛑 API shutting down")
 
-# ---------- App ---------- #
+
+# ==============================
+# FastAPI App Definition
+# ==============================
 
 app = FastAPI(
     title="Article Topic Classification API",
-    description="DistilBERT-based topic classifier with confidence rules",
-    version="1.0.0",
+    description="DistilBERT-based topic classifier with confidence-based routing",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
-# ---------- Request / Response Models ---------- #
+
+# ==============================
+# Request / Response Schemas
+# ==============================
 
 class Article(BaseModel):
-    """
-    Input schema for article classification.
-    Title and body are combined and fed to the model.
-    """
     title: str
     body: str
 
+
 class Prediction(BaseModel):
-    """
-    Output schema returned by the API.
-    Includes prediction confidence and routing decision.
-    """
     prediction: str
     confidence: float
     decision: str
@@ -111,25 +239,19 @@ class Prediction(BaseModel):
     top2_gap: float
     probabilities: Dict[str, float]
 
-# ---------- Confidence Rules ---------- #
+
+# ==============================
+# Confidence Routing Logic
+# ==============================
 
 def apply_confidence_rules(prob_map):
     """
-    Apply business logic on model probabilities to decide routing.
-
-    Args:
-        prob_map (dict): Mapping of label -> probability
-
-    Returns:
-        decision (str): auto_accept | needs_review | reject
-        top2_label (str): Second most probable label
-        top2_gap (float): Confidence gap between top-1 and top-2
+    Apply business rules to determine routing decision.
     """
-    # Sort labels by confidence (highest first)
+
     ranked = sorted(prob_map.items(), key=lambda x: x[1], reverse=True)
     (top1_label, top1_p), (top2_label, top2_p) = ranked[0], ranked[1]
 
-    # Difference between top-1 and top-2 predictions
     top2_gap = round(top1_p - top2_p, 4)
 
     if top1_p >= AUTO_ACCEPT_CONF and top2_gap >= AUTO_ACCEPT_GAP:
@@ -141,20 +263,22 @@ def apply_confidence_rules(prob_map):
 
     return decision, top2_label, top2_gap
 
-# ---------- Core Prediction Logic ---------- #
+
+# ==============================
+# Core Inference Logic
+# ==============================
 
 def run_prediction(article: Article) -> Prediction:
     """
-    End-to-end prediction pipeline:
-    - Text preprocessing
-    - Tokenization
-    - Model inference (no gradients)
-    - Confidence-based routing decision
+    End-to-end inference pipeline:
+    - Merge title + body
+    - Tokenize
+    - Run forward pass
+    - Apply routing rules
     """
-    # Merge title and body into a single input string
+
     text = article.title + " " + article.body
 
-    # Convert text to model-ready tensors
     inputs = tokenizer(
         text,
         truncation=True,
@@ -163,22 +287,17 @@ def run_prediction(article: Article) -> Prediction:
         return_tensors="pt",
     )
 
-    # Move input tensors to CPU/GPU
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # Inference mode: no gradients, forward pass only
     with torch.no_grad():
         outputs = model(**inputs)
         probs = torch.softmax(outputs.logits, dim=1)[0]
 
-    # Build label → probability mapping
     prob_map = {LABELS[i]: round(probs[i].item(), 4) for i in range(len(LABELS))}
 
-    # Highest confidence label
     pred_label = max(prob_map, key=prob_map.get)
     confidence = prob_map[pred_label]
 
-    # Apply routing rules
     decision, top2_label, top2_gap = apply_confidence_rules(prob_map)
 
     return Prediction(
@@ -190,30 +309,24 @@ def run_prediction(article: Article) -> Prediction:
         probabilities=prob_map,
     )
 
-# ---------- API Endpoints ---------- #
+
+# ==============================
+# API Endpoints
+# ==============================
+
+@app.get("/health")
+def health():
+    """Health check endpoint (used by ECS)."""
+    return {"status": "ok"}
+
 
 @app.post("/predict", response_model=Prediction)
 def predict(article: Article):
-    """
-    Classify a single article.
-
-    Example:
-        POST /predict
-        {
-          "title": "Tech stocks rally",
-          "body": "Markets reacted positively..."
-        }
-    """
+    """Classify a single article."""
     return run_prediction(article)
+
 
 @app.post("/batch_predict", response_model=List[Prediction])
 def batch_predict(articles: List[Article]):
-    """
-    Classify multiple articles in one request (batch inference).
-
-    Useful for:
-    - Bulk scoring jobs
-    - Offline pipelines
-    - Human-in-the-loop workflows
-    """
+    """Batch inference endpoint."""
     return [run_prediction(article) for article in articles]

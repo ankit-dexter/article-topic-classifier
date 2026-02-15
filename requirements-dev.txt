@@ -29,3 +29,5 @@ joblib>=1.3.0
 fastapi>=0.104.0
 # Uvicorn - ASGI server to run FastAPI applications
 uvicorn>=0.24.0
+
+boto3>=1.34.0
