@@ -21,23 +21,23 @@ data pipelines\
 
 ------------------------------------------------------------------------
 
-# 🎯 Problem Statement
+## 🎯 Problem Statement
 
-Given a news article (**title + body**), predict its primary topic:
+Given a news article (title + body), predict its primary topic:
 
--   World\
--   Sports\
--   Business\
+-   World
+-   Sports
+-   Business
 -   Sci/Tech
 
-Additionally, the system must:
+The system supports:
 
--   Return class probabilities\
--   Provide a confidence score\
--   Apply decision routing logic:
-    -   ✅ auto_accept\
-    -   ⚠ needs_review\
-    -   ❌ reject
+-   Incremental fine-tuning
+-   Evaluation-based promotion gating
+-   Versioned model registry
+-   Zero-idle-cost training
+-   ECS Fargate inference service
+-   CloudWatch observability
 
 ------------------------------------------------------------------------
 
@@ -56,6 +56,15 @@ Why DistilBERT?
 Framework: PyTorch + Hugging Face Transformers
 
 Training Hardware: Local GPU (RTX 3060)
+
+------------------------------------------------------------------------
+
+## 🏗 Architecture Overview
+
+XML Ingestion (S3 raw/) ↓ Conversion (ECS RunTask) ↓
+processed/train.jsonl (active snapshot + 7-day backups) ↓ Training (ECS
+RunTask with evaluation gating) ↓ Model Registry (S3 versioned models) ↓
+Inference (ECS Fargate Service behind ALB)
 
 ------------------------------------------------------------------------
 
@@ -194,22 +203,92 @@ docker run -d -p 8000:8000 article-topic-classifier
 
 ------------------------------------------------------------------------
 
-# ☁️ AWS Deployment (Free Tier)
+## 🪣 S3 Buckets
 
--   EC2 t2.micro\
--   Amazon Linux 2023\
--   SSH restricted to My IP\
--   Port 8000 exposed for API\
--   Billing alert configured
+### Raw Data Bucket
 
-Public endpoint:
+topicclf-raw-data-ankit
 
-http://`<public-ip>`{=html}:8000/docs
+processed/ - train.jsonl (active snapshot) - backups/ (auto-expire after
+7 days)
 
-See DEPLOYMENT.md for full infrastructure details and troubleshooting
-log.
+### Model Registry Bucket
+
+topicclf-ml-registry-ankit
+
+models/ - vYYYYMMDD_HHMMSS/
+
+pointers/ - latest.json - metadata.json
 
 ------------------------------------------------------------------------
+
+## 🔁 Incremental Training Flow
+
+1.  Read latest.json
+2.  If version exists → download & fine-tune
+3.  Else → train from base model
+4.  Evaluate (Accuracy + Macro F1)
+5.  Promote only if threshold met
+6.  Update metadata.json and latest.json
+
+Promotion threshold example:
+
+PROMOTION_THRESHOLD = 0.80
+
+------------------------------------------------------------------------
+
+## 📊 Metadata Tracking
+
+metadata.json stores:
+
+-   last_trained_at
+-   current_version
+-   total_versions
+-   training_mode
+-   metrics (accuracy, f1)
+-   training_time_seconds
+-   dataset_size
+
+------------------------------------------------------------------------
+
+## 🚀 Inference Service
+
+-   ECS Fargate Service
+-   Application Load Balancer
+-   Swagger endpoint: /docs
+-   Loads model using latest.json pointer
+
+------------------------------------------------------------------------
+
+## 💰 Cost Strategy
+
+-   ECS RunTask for training (no idle cost)
+-   ECS RunTask for conversion
+-   ECS Service for inference
+-   No SageMaker
+-   No Lambda
+-   No NAT Gateway
+
+------------------------------------------------------------------------
+
+## 🔄 Rollback Capability
+
+Rollback is instant by updating:
+
+pointers/latest.json
+
+Inference loads previous version on restart.
+
+------------------------------------------------------------------------
+
+## 📁 Project Structure
+
+article-topic-classifier/ ├── api/ ├── artifacts/ ├── config/ ├──
+scripts/ ├── src/ │ ├── dataset.py │ ├── registry.py │ └── utils.py ├──
+Dockerfile ├── Dockerfile.train └── README.md
+
+------------------------------------------------------------------------
+
 
 # 🛠 Real-World Issues Resolved
 
