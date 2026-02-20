@@ -1,68 +1,66 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-*.pem
+*.pyc
+*.pyo
+*.pyd
 
-# Virtual environments
+.venv/
 venv/
-ENV/
-env/
-.venv
+.env
 
-# IDE
-.vscode/
+.git/
 .idea/
-*.swp
-*.swo
-*~
+.vscode/
+
+logs/
+*.log
+
+# local datasets & outputs (do not bake into image)
+data/
+output/
+artifacts/
+models/
+
+# large files
+*.csv
+*.jsonl
+*.parquet
+
+# OS
 .DS_Store
 Thumbs.db
 
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
 
-# Data and models
-data/*.jsonl
-artifacts/
-*.pkl
-*.h5
-*.pt
-*.pth
-*.onnx
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Hugging Face cache
-.cache/
-.huggingface/
-
-# Environment variables
+.venv/
+venv/
 .env
-.env.local
 
-# Logs
-*.log
+.git/
+.idea/
+.vscode/
+
 logs/
+*.log
 
+# local datasets & outputs (do not bake into image)
+data/
+output/
+artifacts/
+models/
 
-AWS cmd.readme.md
+# large files
+*.csv
+*.jsonl
+*.parquet
+
+# OS
+.DS_Store
+Thumbs.db
+
+runbook/
+
+article-key.pem

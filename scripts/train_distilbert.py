@@ -1,201 +1,244 @@
 """
-Training script for DistilBERT-based article topic classifier.
+Production-ready training script for DistilBERT topic classifier.
 
-This script performs the following steps:
-1. Load configuration from YAML file
-2. Initialize tokenizer and pre-trained DistilBERT model
-3. Load and preprocess the training dataset
-4. Fine-tune the model on article topic classification task
-5. Save the trained model and tokenizer for inference
+Supports:
+- Local training
+- Cloud training (S3 registry)
+- Incremental fine-tuning
+- Safe S3 model promotion
+- CloudWatch structured logging
 """
 
-# Import required libraries
-import yaml  # Parse YAML configuration files
-import torch  # PyTorch deep learning framework
-import logging  # Log training progress and status
-from pathlib import Path  # Handle file paths cross-platform
-from torch.utils.data import DataLoader  # Batch data for training
-from torch.optim import AdamW  # AdamW optimizer (PyTorch version, better than transformers version)
+# ========= FIX FOR LOCAL EXECUTION =========
+import sys
+from pathlib import Path
 
-# Import from Hugging Face transformers library
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+# ============================================
+
+import os
+import json
+import yaml
+import torch
+import boto3
+import logging
+from datetime import datetime, timezone
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
 from transformers import (
-    AutoTokenizer,  # Automatically load the correct tokenizer
-    AutoModelForSequenceClassification,  # Load classification model
-    get_scheduler,  # Configure learning rate scheduler
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    get_scheduler,
 )
 
-# Import custom modules from src directory
-from src.dataset import NewsDataset  # Custom dataset class that loads and tokenizes data
-from src.utils import setup_logging  # Configure logging to file and console
+from src.dataset import NewsDataset
+from src.utils import setup_logging
+from src.registry import ModelRegistry
 
+
+# =====================================================
+# DATASET DOWNLOAD (CLOUD MODE)
+# =====================================================
+def download_latest_jsonl_from_s3(raw_bucket, logger):
+    s3 = boto3.client("s3")
+
+    logger.info("[DATASET][CLOUD] Searching processed/train_*.jsonl")
+
+    response = s3.list_objects_v2(
+        Bucket=raw_bucket,
+        Prefix="processed/",
+    )
+
+    jsonl_files = [
+        obj for obj in response.get("Contents", [])
+        if obj["Key"].startswith("processed/train_")
+        and obj["Key"].endswith(".jsonl")
+    ]
+
+    if not jsonl_files:
+        raise RuntimeError("[DATASET][CLOUD] No processed train_*.jsonl found")
+
+    latest_file = max(jsonl_files, key=lambda x: x["LastModified"])
+
+    local_path = "/tmp/train.jsonl"
+
+    s3.download_file(raw_bucket, latest_file["Key"], local_path)
+
+    logger.info(
+        f"[DATASET][CLOUD] Using dataset: {latest_file['Key']}"
+    )
+
+    return local_path
+
+
+# =====================================================
+# MAIN
+# =====================================================
 def main():
-    """
-    Main training function that orchestrates the entire training pipeline.
-    """
-    
-    # Initialize logging system (creates logs directory and log files)
     setup_logging()
     logger = logging.getLogger(__name__)
-    
-    # Print training start banner
+
     logger.info("=" * 80)
-    logger.info("Starting training pipeline")
+    logger.info("TRAINING PIPELINE STARTED")
     logger.info("=" * 80)
-    
-    # ========== LOAD CONFIGURATION ==========
-    # Load hyperparameters and settings from YAML configuration file
-    logger.info("Loading configuration from config/train.yaml")
+
+    # -------------------------------------------------
+    # Load Config
+    # -------------------------------------------------
     with open("config/train.yaml") as f:
-        cfg = yaml.safe_load(f)  # Parse YAML into Python dictionary
-    logger.info(f"Config loaded successfully")
-    logger.debug(f"Config: {cfg}")
+        cfg = yaml.safe_load(f)
 
-    # ========== SET UP DEVICE (GPU or CPU) ==========
-    # Check if NVIDIA GPU (CUDA) is available, use CPU as fallback
+    logger.info("[CONFIG] Configuration loaded")
+
+    raw_bucket = os.environ.get("RAW_BUCKET")
+    registry_bucket = os.environ.get("REGISTRY_BUCKET")
+
+    cloud_mode = raw_bucket and registry_bucket
+
+    if cloud_mode:
+        logger.info("[MODE] Running in CLOUD mode")
+        cfg["data"]["train_jsonl"] = download_latest_jsonl_from_s3(
+            raw_bucket,
+            logger,
+        )
+    else:
+        logger.info("[MODE] Running in LOCAL mode")
+
+    # -------------------------------------------------
+    # Device
+    # -------------------------------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    logger.info(f"[DEVICE] Using {device}")
 
-    # ========== LOAD TOKENIZER ==========
-    # Tokenizer converts raw text into token IDs that the model understands
-    # DistilBERT uses WordPiece tokenization
-    logger.info(f"Loading tokenizer: {cfg['model']['name']}")
+    # -------------------------------------------------
+    # Tokenizer
+    # -------------------------------------------------
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["name"])
-    logger.info("Tokenizer loaded successfully")
-    
-    # ========== LOAD PRE-TRAINED MODEL ==========
-    # Load DistilBERT: a lightweight BERT model (40% smaller, 60% faster)
-    # Add classification head on top for 4-class topic classification
-    # Model learns general language understanding + fine-tunes for our task
-    logger.info(f"Loading model: {cfg['model']['name']} with {cfg['model']['num_labels']} labels")
-    model = AutoModelForSequenceClassification.from_pretrained(
-        cfg["model"]["name"],
-        num_labels=cfg["model"]["num_labels"],  # 4 topic classes
-    ).to(device)  # Move model to GPU for faster computation
-    logger.info(f"Model moved to {device}")
+    logger.info("[MODEL] Tokenizer loaded")
 
-    # ========== LOAD DATASET ==========
-    # Create dataset instance that:
-    # - Reads JSONL file (JSON Lines format - one JSON object per line)
-    # - Tokenizes text (converts to numeric representations)
-    # - Creates attention masks (tells model which tokens are real vs padding)
-    # - Maps topic labels to numeric IDs
-    logger.info(f"Loading dataset from {cfg['data']['train_jsonl']}")
+    # -------------------------------------------------
+    # Registry
+    # -------------------------------------------------
+    registry = ModelRegistry(registry_bucket, logger)
+
+    existing_model_path = registry.load_existing_model_path(
+        cfg["output"]["dir"]
+    )
+
+    # -------------------------------------------------
+    # Model Loading
+    # -------------------------------------------------
+    if existing_model_path:
+        logger.info(f"[MODEL] Fine-tuning existing model: {existing_model_path}")
+        model = AutoModelForSequenceClassification.from_pretrained(
+            existing_model_path
+        ).to(device)
+    else:
+        logger.info("[MODEL] Training from base model")
+        model = AutoModelForSequenceClassification.from_pretrained(
+            cfg["model"]["name"],
+            num_labels=cfg["model"]["num_labels"],
+        ).to(device)
+
+    # -------------------------------------------------
+    # Dataset
+    # -------------------------------------------------
+    logger.info(f"[DATASET] Loading {cfg['data']['train_jsonl']}")
+
     dataset = NewsDataset(
         cfg["data"]["train_jsonl"],
         tokenizer,
-        cfg["training"]["max_length"],  # Truncate/pad to 256 tokens
+        cfg["training"]["max_length"],
     )
-    logger.info(f"Dataset loaded: {len(dataset)} samples")
 
-    # ========== CREATE DATA LOADER ==========
-    # DataLoader handles:
-    # - Batching: groups samples together for efficient GPU processing
-    # - Shuffling: randomizes order to prevent overfitting
-    # - Parallel loading: can load data while GPU processes previous batch
-    logger.info(f"Creating DataLoader with batch_size={cfg['training']['batch_size']}")
     loader = DataLoader(
         dataset,
-        batch_size=cfg["training"]["batch_size"],  # 16 samples per batch
-        shuffle=True,  # Randomize batch order each epoch
+        batch_size=cfg["training"]["batch_size"],
+        shuffle=True,
     )
-    logger.info(f"DataLoader created: {len(loader)} batches")
 
-    # ========== SETUP OPTIMIZER ==========
-    # AdamW optimizer: adaptive learning rate for each parameter
-    # Weight decay (L2 regularization): prevents overfitting by penalizing large weights
-    logger.info(f"Setting up optimizer (lr={cfg['training']['learning_rate']}, weight_decay={cfg['training']['weight_decay']})")
+    logger.info(f"[DATASET] {len(dataset)} samples | {len(loader)} batches")
+
+    # -------------------------------------------------
+    # Optimizer + Scheduler
+    # -------------------------------------------------
     optimizer = AdamW(
-        model.parameters(),  # Which parameters to update
-        lr=cfg["training"]["learning_rate"],  # Learning rate: 0.00002 (small for fine-tuning)
-        weight_decay=cfg["training"]["weight_decay"],  # L2 penalty: 0.01
+        model.parameters(),
+        lr=cfg["training"]["learning_rate"],
+        weight_decay=cfg["training"]["weight_decay"],
     )
 
-    # ========== SETUP LEARNING RATE SCHEDULER ==========
-    # Scheduler adjusts learning rate during training:
-    # - Warmup phase (first 10% of steps): gradually increase LR to prevent instability
-    # - Linear decay (remaining 90%): slowly decrease LR for finer-grained updates
-    # This helps model converge better and generalize
-    num_training_steps = cfg["training"]["epochs"] * len(loader)
-    warmup_steps = int(cfg["training"]["warmup_ratio"] * num_training_steps)
-    logger.info(f"Total training steps: {num_training_steps}, Warmup steps: {warmup_steps}-{len(loader)}")
-    
+    total_steps = cfg["training"]["epochs"] * len(loader)
+    warmup_steps = int(cfg["training"]["warmup_ratio"] * total_steps)
+
     scheduler = get_scheduler(
-        "linear",  # Linear decay after warmup
+        "linear",
         optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps,
+        num_training_steps=total_steps,
     )
-    logger.info("Scheduler configured")
 
-    # ========== TRAINING LOOP ==========
-    logger.info("=" * 80)
-    logger.info(f"Starting training for {cfg['training']['epochs']} epochs")
-    logger.info("=" * 80)
-    
-    # Set model to training mode (enables dropout, updates batch norm stats, etc.)
+    logger.info(
+        f"[TRAINING] Steps={total_steps} | Warmup={warmup_steps}"
+    )
+
+    # -------------------------------------------------
+    # Training Loop
+    # -------------------------------------------------
     model.train()
-    
-    # Outer loop: iterate through epochs (full passes through data)
+
     for epoch in range(cfg["training"]["epochs"]):
-        logger.info(f"\nEpoch {epoch+1}/{cfg['training']['epochs']}")
+        logger.info(f"[TRAINING] Epoch {epoch+1}")
+
         total_loss = 0
-        num_batches = 0
-        
-        # Inner loop: iterate through batches
-        for batch_idx, batch in enumerate(loader):
-            # Move batch tensors to GPU if available
+
+        for step, batch in enumerate(loader):
             batch = {k: v.to(device) for k, v in batch.items()}
-            
-            # ===== FORWARD PASS =====
-            # Feed input_ids, attention_mask to model
-            # Model outputs: logits (raw predictions) for each class
-            # Cross-entropy loss: measures how wrong predictions are vs true labels
-            out = model(**batch)  # Equivalent to model(input_ids=..., attention_mask=..., labels=...)
-            loss = out.loss
-            
-            # ===== BACKWARD PASS (Gradient Computation) =====
-            # Compute gradients: how much each weight contributed to the loss
+
+            outputs = model(**batch)
+            loss = outputs.loss
+
             loss.backward()
-            
-            # ===== PARAMETER UPDATE =====
-            # Use gradients to update model weights (gradient descent)
             optimizer.step()
-            
-            # ===== UPDATE LEARNING RATE =====
-            # Adjust learning rate according to schedule
             scheduler.step()
-            
-            # ===== RESET GRADIENTS =====
-            # Clear gradients to prevent them from accumulating
             optimizer.zero_grad()
 
-            # Accumulate loss for epoch average
             total_loss += loss.item()
-            num_batches += 1
-            
-            # Log progress every ~20% of batches (for visibility without too much logging)
-            if (batch_idx + 1) % max(1, len(loader) // 5) == 0:
-                avg_loss = total_loss / num_batches
-                logger.info(f"  Batch {batch_idx+1}/{len(loader)} | Loss: {avg_loss:.4f}")
 
-        # Calculate and log epoch average loss
-        epoch_loss = total_loss / len(loader)
-        logger.info(f"Epoch {epoch+1} completed | Avg Loss: {epoch_loss:.4f}")
+            if (step + 1) % 10 == 0:
+                logger.info(
+                    f"[TRAINING] Epoch {epoch+1} "
+                    f"Step {step+1}/{len(loader)} "
+                    f"Loss={loss.item():.4f}"
+                )
 
-    # ========== SAVE TRAINED MODEL ==========
-    logger.info("\n" + "=" * 80)
-    logger.info(f"Training completed! Saving model to {cfg['output']['dir']}")
+        avg_loss = total_loss / len(loader)
+        logger.info(
+            f"[TRAINING] Epoch {epoch+1} completed | Avg Loss={avg_loss:.4f}"
+        )
+
+    # -------------------------------------------------
+    # Save Model (Local Directory)
+    # -------------------------------------------------
+    output_dir = cfg["output"]["dir"]
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    model.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
+
+    logger.info(f"[SAVE] Model saved to {output_dir}")
+
+    # -------------------------------------------------
+    # Registry Upload (Cloud Only)
+    # -------------------------------------------------
+    registry.save_new_version(output_dir)
+
     logger.info("=" * 80)
-    
-    # Create output directory if it doesn't exist
-    Path(cfg["output"]["dir"]).mkdir(parents=True, exist_ok=True)
-    
-    # Save model weights and configuration (can be loaded with from_pretrained)
-    model.save_pretrained(cfg["output"]["dir"])
-    
-    # Save tokenizer (needed for inference to tokenize new text)
-    tokenizer.save_pretrained(cfg["output"]["dir"])
-    logger.info("[SUCCESS] Model and tokenizer saved successfully")
+    logger.info("TRAINING PIPELINE COMPLETED SUCCESSFULLY")
+    logger.info("=" * 80)
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,19 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# (Optional) minimal system deps. Remove if you don't need them.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python deps first (better caching)
+COPY requirements-train.txt .
+RUN pip install --no-cache-dir -r requirements-train.txt
+
+# Copy project code
+COPY . .
+
+ENV PYTHONUNBUFFERED=1
+
+# Run the training script (your file)
+CMD ["python", "scripts/train_distilbert.py"]

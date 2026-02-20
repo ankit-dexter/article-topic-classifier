@@ -7,7 +7,7 @@ data:
   text_fields: ["title", "body"]
 
 training:
-  epochs: 3
+  epochs: 2
   batch_size: 16
   learning_rate: 0.00002
   max_length: 256

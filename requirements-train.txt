@@ -1,0 +1,9 @@
+torch
+transformers
+datasets
+accelerate
+scikit-learn
+pandas
+boto3
+numpy
+typing_extensions>=4.9.0
