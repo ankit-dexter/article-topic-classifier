@@ -1,11 +1,8 @@
 """
-Production-ready training script for DistilBERT topic classifier.
-
-Supports:
-- Local training
-- Cloud training (S3 registry)
+Production Training Script with:
 - Incremental fine-tuning
-- Safe S3 model promotion
+- Evaluation + promotion gating
+- Registry update with metrics
 - CloudWatch structured logging
 """
 
@@ -21,9 +18,11 @@ if str(PROJECT_ROOT) not in sys.path:
 import os
 import json
 import yaml
+import time
 import torch
 import boto3
 import logging
+import numpy as np
 from datetime import datetime, timezone
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
@@ -32,45 +31,52 @@ from transformers import (
     AutoModelForSequenceClassification,
     get_scheduler,
 )
+from sklearn.metrics import accuracy_score, f1_score
 
 from src.dataset import NewsDataset
 from src.utils import setup_logging
 from src.registry import ModelRegistry
 
 
+PROMOTION_THRESHOLD = 0.80  # Adjust as needed
+
+
 # =====================================================
-# DATASET DOWNLOAD (CLOUD MODE)
+# DATASET DOWNLOAD (CLOUD)
 # =====================================================
-def download_latest_jsonl_from_s3(raw_bucket, logger):
+def download_snapshot_from_s3(raw_bucket, logger):
     s3 = boto3.client("s3")
-
-    logger.info("[DATASET][CLOUD] Searching processed/train_*.jsonl")
-
-    response = s3.list_objects_v2(
-        Bucket=raw_bucket,
-        Prefix="processed/",
-    )
-
-    jsonl_files = [
-        obj for obj in response.get("Contents", [])
-        if obj["Key"].startswith("processed/train_")
-        and obj["Key"].endswith(".jsonl")
-    ]
-
-    if not jsonl_files:
-        raise RuntimeError("[DATASET][CLOUD] No processed train_*.jsonl found")
-
-    latest_file = max(jsonl_files, key=lambda x: x["LastModified"])
-
+    key = "processed/train.jsonl"
     local_path = "/tmp/train.jsonl"
 
-    s3.download_file(raw_bucket, latest_file["Key"], local_path)
-
-    logger.info(
-        f"[DATASET][CLOUD] Using dataset: {latest_file['Key']}"
-    )
+    logger.info(f"[DATASET][CLOUD] Downloading {key}")
+    s3.download_file(raw_bucket, key, local_path)
 
     return local_path
+
+
+# =====================================================
+# EVALUATION
+# =====================================================
+def evaluate_model(model, loader, device):
+    model.eval()
+    preds = []
+    labels = []
+
+    with torch.no_grad():
+        for batch in loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            logits = outputs.logits
+            predicted = torch.argmax(logits, dim=1)
+
+            preds.extend(predicted.cpu().numpy())
+            labels.extend(batch["labels"].cpu().numpy())
+
+    acc = accuracy_score(labels, preds)
+    f1 = f1_score(labels, preds, average="macro")
+
+    return acc, f1
 
 
 # =====================================================
@@ -84,13 +90,15 @@ def main():
     logger.info("TRAINING PIPELINE STARTED")
     logger.info("=" * 80)
 
+    start_time = time.time()
+
     # -------------------------------------------------
     # Load Config
     # -------------------------------------------------
     with open("config/train.yaml") as f:
         cfg = yaml.safe_load(f)
 
-    logger.info("[CONFIG] Configuration loaded")
+    logger.info("[CONFIG] Loaded")
 
     raw_bucket = os.environ.get("RAW_BUCKET")
     registry_bucket = os.environ.get("REGISTRY_BUCKET")
@@ -98,19 +106,20 @@ def main():
     cloud_mode = raw_bucket and registry_bucket
 
     if cloud_mode:
-        logger.info("[MODE] Running in CLOUD mode")
-        cfg["data"]["train_jsonl"] = download_latest_jsonl_from_s3(
-            raw_bucket,
-            logger,
+        logger.info("[MODE] CLOUD")
+        cfg["data"]["train_jsonl"] = download_snapshot_from_s3(
+            raw_bucket, logger
         )
     else:
-        logger.info("[MODE] Running in LOCAL mode")
+        logger.info("[MODE] LOCAL")
 
     # -------------------------------------------------
     # Device
     # -------------------------------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"[DEVICE] Using {device}")
+
+    torch.set_num_threads(os.cpu_count())
 
     # -------------------------------------------------
     # Tokenizer
@@ -128,15 +137,15 @@ def main():
     )
 
     # -------------------------------------------------
-    # Model Loading
+    # Model
     # -------------------------------------------------
     if existing_model_path:
-        logger.info(f"[MODEL] Fine-tuning existing model: {existing_model_path}")
+        logger.info(f"[MODEL] Fine-tuning {existing_model_path}")
         model = AutoModelForSequenceClassification.from_pretrained(
             existing_model_path
         ).to(device)
     else:
-        logger.info("[MODEL] Training from base model")
+        logger.info("[MODEL] Training from base")
         model = AutoModelForSequenceClassification.from_pretrained(
             cfg["model"]["name"],
             num_labels=cfg["model"]["num_labels"],
@@ -145,8 +154,6 @@ def main():
     # -------------------------------------------------
     # Dataset
     # -------------------------------------------------
-    logger.info(f"[DATASET] Loading {cfg['data']['train_jsonl']}")
-
     dataset = NewsDataset(
         cfg["data"]["train_jsonl"],
         tokenizer,
@@ -159,7 +166,7 @@ def main():
         shuffle=True,
     )
 
-    logger.info(f"[DATASET] {len(dataset)} samples | {len(loader)} batches")
+    logger.info(f"[DATASET] {len(dataset)} samples")
 
     # -------------------------------------------------
     # Optimizer + Scheduler
@@ -178,10 +185,6 @@ def main():
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
-    )
-
-    logger.info(
-        f"[TRAINING] Steps={total_steps} | Warmup={warmup_steps}"
     )
 
     # -------------------------------------------------
@@ -207,7 +210,7 @@ def main():
 
             total_loss += loss.item()
 
-            if (step + 1) % 10 == 0:
+            if (step + 1) % 20 == 0:
                 logger.info(
                     f"[TRAINING] Epoch {epoch+1} "
                     f"Step {step+1}/{len(loader)} "
@@ -216,11 +219,21 @@ def main():
 
         avg_loss = total_loss / len(loader)
         logger.info(
-            f"[TRAINING] Epoch {epoch+1} completed | Avg Loss={avg_loss:.4f}"
+            f"[TRAINING] Epoch {epoch+1} Avg Loss={avg_loss:.4f}"
         )
 
     # -------------------------------------------------
-    # Save Model (Local Directory)
+    # Evaluation
+    # -------------------------------------------------
+    logger.info("[EVAL] Starting evaluation")
+
+    accuracy, f1 = evaluate_model(model, loader, device)
+
+    logger.info(f"[EVAL] Accuracy={accuracy:.4f}")
+    logger.info(f"[EVAL] F1={f1:.4f}")
+
+    # -------------------------------------------------
+    # Save Model Locally
     # -------------------------------------------------
     output_dir = cfg["output"]["dir"]
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -230,13 +243,29 @@ def main():
 
     logger.info(f"[SAVE] Model saved to {output_dir}")
 
+    training_duration = time.time() - start_time
+    logger.info(f"[STATS] Training duration: {training_duration:.2f}s")
+
     # -------------------------------------------------
-    # Registry Upload (Cloud Only)
+    # Promotion Gating
     # -------------------------------------------------
-    registry.save_new_version(output_dir)
+    if accuracy >= PROMOTION_THRESHOLD:
+        logger.info("[PROMOTION] Threshold met — promoting model")
+
+        registry.save_new_version(
+            output_dir,
+            accuracy=accuracy,
+            f1=f1,
+            training_time=training_duration,
+            dataset_size=len(dataset),
+        )
+    else:
+        logger.warning(
+            "[PROMOTION] Threshold NOT met — skipping promotion"
+        )
 
     logger.info("=" * 80)
-    logger.info("TRAINING PIPELINE COMPLETED SUCCESSFULLY")
+    logger.info("TRAINING PIPELINE COMPLETED")
     logger.info("=" * 80)
 
 
